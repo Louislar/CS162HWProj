@@ -75,6 +75,44 @@ int num_words(FILE* infile) {
  * Useful functions: fgetc(), isalpha(), tolower(), add_word().
  */
 void count_words(WordCount **wclist, FILE *infile) {
+  char c=fgetc(infile);
+  char *singleWord = malloc(sizeof(char) * MAX_WORD_LEN);
+  int curWordLen = 0;
+  if(infile==NULL) {
+    printf("No file reads in.\n");
+  }
+  while(c!=EOF)
+  {
+    if(isalpha(c))
+    {
+      if(curWordLen < MAX_WORD_LEN)
+      {
+        *(singleWord + curWordLen) = tolower(c);
+        ++curWordLen;
+      }
+      else
+      {
+        // What if cur word length is greater then 64
+        // word need to be push to wclist
+        // new character need to be stored in new word string
+        add_word(wclist, singleWord);
+        singleWord = malloc(sizeof(char) * MAX_WORD_LEN);
+        curWordLen = 0;
+        *(singleWord + curWordLen) = tolower(c);
+        ++curWordLen;
+      }
+    }
+    else
+    {
+      // word need to be push to wclist
+      add_word(wclist, singleWord);
+      singleWord = malloc(sizeof(char) * MAX_WORD_LEN);
+      curWordLen = 0;
+    }
+
+    c = fgetc(infile);
+  }
+
 }
 
 /*
@@ -82,6 +120,14 @@ void count_words(WordCount **wclist, FILE *infile) {
  * Useful function: strcmp().
  */
 static bool wordcount_less(const WordCount *wc1, const WordCount *wc2) {
+  if(wc1->count > wc2->count)
+    return false;
+  else if(wc1->count < wc2->count)
+    return true;
+  else if(strcmp(wc1->word, wc2->word) <= 0)
+    return true;
+  else
+    return false;
   return 0;
 }
 
@@ -157,6 +203,7 @@ int main (int argc, char *argv[]) {
     total_words = num_words(infile);
     printf("The total number of words is: %i\n", total_words);
   } else {
+    count_words(&word_counts, infile);
     wordcount_sort(&word_counts, wordcount_less);
 
     printf("The frequencies of each word are: \n");
