@@ -35,6 +35,21 @@
 /*
  * main - handle command line, spawning one thread per file.
  */
+
+// argument structure for count_words() in pthread_create()
+struct thread_arg {
+  word_count_list_t* word_counts;
+  FILE* infile;
+};
+
+void* count_words_wrapper(void* args) {
+  struct thread_arg* t_arg;
+  t_arg = (struct thread_arg*) args;
+  printf("Working in count words wrapper function.\n");
+  count_words(t_arg->word_counts, t_arg->infile);
+  pthread_exit(NULL);
+}
+
 int main(int argc, char* argv[]) {
   /* Create the empty data structure. */
   word_count_list_t word_counts;
@@ -45,10 +60,39 @@ int main(int argc, char* argv[]) {
     count_words(&word_counts, stdin);
   } else {
     /* TODO */
+
+    // Read in file 
+    FILE* infile = fopen(argv[1], "r");
+    if(!infile) {
+      printf("File opening fail\n");
+      return -1;
+    }
+
+    // Create multiple threads for counting words 
+    long t;
+    int rc;
+    pthread_t threads[argc-1];
+    for(t = 0;t<argc-1;++t) {
+      // todo: read in file related to t^th command line argument 
+      printf("main: creating thread %ld\n", t);
+
+      struct thread_arg* t_arg = malloc(sizeof(struct thread_arg));
+      t_arg->word_counts = &word_counts;
+      t_arg->infile = infile;
+
+      rc = pthread_create(&threads[t], NULL, count_words_wrapper, (void*)t_arg);
+      if (rc) {
+        printf("ERROR; return code from pthread_create() is %d\n", rc);
+        exit(-1);
+      }
+    }
+
+    fclose(infile);
   }
 
   /* Output final result of all threads' work. */
   wordcount_sort(&word_counts, less_count);
   fprint_words(&word_counts, stdout);
+  pthread_exit(NULL);
   return 0;
 }
