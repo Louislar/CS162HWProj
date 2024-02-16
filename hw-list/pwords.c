@@ -39,14 +39,22 @@
 // argument structure for count_words() in pthread_create()
 struct thread_arg {
   word_count_list_t* word_counts;
-  FILE* infile;
+  char* infile;
 };
 
 void* count_words_wrapper(void* args) {
   struct thread_arg* t_arg;
   t_arg = (struct thread_arg*) args;
+  // Read in file 
+  FILE* infile = fopen(t_arg->infile, "r");
+  if(!infile) {
+    printf("File opening fail\n");
+    pthread_exit(NULL);
+  }
+
   printf("Working in count words wrapper function.\n");
-  count_words(t_arg->word_counts, t_arg->infile);
+  count_words(t_arg->word_counts, infile);
+  printf("Child thread end\n");
   pthread_exit(NULL);
 }
 
@@ -54,6 +62,10 @@ int main(int argc, char* argv[]) {
   /* Create the empty data structure. */
   word_count_list_t word_counts;
   init_words(&word_counts);
+  long t;
+  pthread_t threads[argc-1];
+  struct thread_arg* t_arg[argc-1];
+
 
   if (argc <= 1) {
     /* Process stdin in a single thread. */
@@ -61,36 +73,33 @@ int main(int argc, char* argv[]) {
   } else {
     /* TODO */
 
-    // Read in file 
-    FILE* infile = fopen(argv[1], "r");
-    if(!infile) {
-      printf("File opening fail\n");
-      return -1;
-    }
-
     // Create multiple threads for counting words 
-    long t;
-    int rc;
-    pthread_t threads[argc-1];
     for(t = 0;t<argc-1;++t) {
       // todo: read in file related to t^th command line argument 
       printf("main: creating thread %ld\n", t);
 
-      struct thread_arg* t_arg = malloc(sizeof(struct thread_arg));
-      t_arg->word_counts = &word_counts;
-      t_arg->infile = infile;
+      t_arg[t]  = (struct thread_arg*) malloc(sizeof(struct thread_arg));
+      t_arg[t]->word_counts = &word_counts;
+      t_arg[t]->infile = argv[1];
 
-      rc = pthread_create(&threads[t], NULL, count_words_wrapper, (void*)t_arg);
+      int rc;
+      rc = pthread_create(&threads[t], NULL, count_words_wrapper, (void*)t_arg[t]);
       if (rc) {
         printf("ERROR; return code from pthread_create() is %d\n", rc);
         exit(-1);
       }
     }
 
-    fclose(infile);
+  }
+  
+  /* Wait all the child threads end */
+  for(t=0;t<argc-1;++t) {
+    void* retval;
+    pthread_join(threads[t], &retval);
   }
 
   /* Output final result of all threads' work. */
+  printf("Output final result of all threas' work\n");
   wordcount_sort(&word_counts, less_count);
   fprint_words(&word_counts, stdout);
   pthread_exit(NULL);

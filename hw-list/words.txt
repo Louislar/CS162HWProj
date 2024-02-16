@@ -1,2 +1,18 @@
-abc def AaA
-bbb zzz aaa
+warning: GDB: Failed to set controlling terminal: Inappropriate ioctl for device
+Output final result of all threas' work
+Output final result of all threas' work
+	1	all
+	1	final
+	1	of
+	1	output
+	1	result
+	1	threas
+	1	work
+Output final result of all threas' work
+	3	all
+	3	final
+	3	of
+	3	output
+	3	result
+	3	threas
+	3	work
