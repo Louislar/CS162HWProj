@@ -61,8 +61,20 @@ word_count_t* find_word(word_count_list_t* wclist, char* word) {
 }
 
 word_count_t* add_word(word_count_list_t* wclist, char* word) {
-  word_count_t* wc = find_word(wclist, word);
+  word_count_t* wc = NULL;
   pthread_mutex_lock(&(wclist->lock));
+
+  // find word
+  struct list_elem* e;
+  for(e = list_begin(&wclist->lst);e != list_end(&wclist->lst);e = list_next(e)) {
+    wc = list_entry(e, word_count_t, elem);
+    if(strcmp(wc->word, word) == 0) {
+      break;
+    }
+    wc = NULL;
+  }
+
+  // add word
   if(wc) ++wc->count;
   else {
     wc = malloc(sizeof(word_count_t));
@@ -80,7 +92,7 @@ void fprint_words(word_count_list_t* wclist, FILE* outfile) {
   pthread_mutex_lock(&(wclist->lock));
   for(e = list_begin(&wclist->lst);e != list_end(&wclist->lst);e = list_next(e)) {
      word_count_t* wc = list_entry(e, word_count_t, elem);
-     fprintf(outfile, "\t%i\t%s\n", wc->count, wc->word);
+     fprintf(outfile, "%8i\t%s\n", wc->count, wc->word);
   }
   pthread_mutex_unlock(&(wclist->lock));
 }
