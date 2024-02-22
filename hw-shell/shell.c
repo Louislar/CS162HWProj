@@ -48,11 +48,14 @@ fun_desc_t cmd_table[] = {
     {cmd_help, "?", "show this help menu"},
     {cmd_exit, "exit", "exit the command shell"},
     {cmd_print, "cmdprint", "print the line"},
-    {cmd_pwd, "pwd", "print current working directory"}, 
+    {cmd_pwd, "pwd", "print current working directory"},
+    {cmd_cd, "cd", "change current working directory"}, 
+
 };
 
 /* Change current working directory */ 
 int cmd_cd(struct tokens* tokens) {
+  chdir(tokens_get_token(tokens, 1));
   return 1;
 }
 
@@ -141,7 +144,28 @@ int main(unused int argc, unused char* argv[]) {
       cmd_table[fundex].fun(tokens);
     } else {
       /* REPLACE this to run commands as programs. */
-      fprintf(stdout, "This shell doesn't know how to run programs.\n");
+      /* todo */
+      int status;
+      pid_t cpid;
+      cpid = fork();
+      if(cpid > 0) {
+        /* parent process */
+        /* wait for the child process to finish */
+        wait(&status);
+      }
+      else if(cpid == 0) {
+        /* child process */
+        /* Run a new process image by using a execv() system call */
+        // todo: support multiple arguments which can be pass into the program
+        char* args[] = {tokens_get_token(tokens, 0), tokens_get_token(tokens, 1)};
+        execv(tokens_get_token(tokens, 0), args);
+        perror("execv");
+        exit(0);
+      }
+      else {
+        perror("Fork failed");
+      }
+      // fprintf(stdout, "This shell doesn't know how to run programs.\n");
     }
 
     if (shell_is_interactive)
