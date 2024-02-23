@@ -157,7 +157,12 @@ int main(unused int argc, unused char* argv[]) {
         /* child process */
         /* Run a new process image by using a execv() system call */
         // todo: support multiple arguments which can be pass into the program
-        char* args[] = {tokens_get_token(tokens, 0), tokens_get_token(tokens, 1)};
+        // Since we need to fill NULL to the last char*, 
+        // I just pass a invalid i to tokens_get_token() 
+        char** args = malloc(sizeof(char*) * (tokens_get_length(tokens)+1));
+        for(unsigned int i = 0; i <= tokens_get_length(tokens); ++i) {
+          args[i] = tokens_get_token(tokens, i);
+        }
         execv(tokens_get_token(tokens, 0), args);
         perror("execv");
         exit(0);
