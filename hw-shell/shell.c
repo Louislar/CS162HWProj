@@ -156,7 +156,43 @@ int main(unused int argc, unused char* argv[]) {
       else if(cpid == 0) {
         /* child process */
         /* Run a new process image by using a execv() system call */
-        // todo: support multiple arguments which can be pass into the program
+        /* Use getenv(PATH) to get the PATH environment variable */
+        /* todo: check if the command line path is absolute path, 
+         * It is a absolute path if it starts with a '/' */
+        char* pathenv = malloc(strlen(getenv("PATH")));
+        strcpy(pathenv, getenv("PATH"));
+        const char* const delim = ":";
+        char* saveptr = NULL;
+        char* filepath = NULL;
+
+        printf("%s\n", pathenv);
+        pathenv = strtok_r(pathenv, delim, &saveptr);
+        while(pathenv) {
+          /* See if the file exist in this directory */
+          char* dup_path = malloc(strlen(pathenv));
+          strcpy(dup_path, pathenv);
+          strcat(dup_path, "/");
+          strcat(dup_path, tokens_get_token(tokens, 0));
+          if(access(dup_path, F_OK) != -1) {
+            printf("File exist: %s\n", dup_path);
+            filepath = dup_path;
+            break;
+          }
+          else {
+            printf("File doesn't exist: %s\n", dup_path);
+          }
+
+          pathenv = strtok_r(NULL, delim, &saveptr);
+        }
+
+        if(!filepath) {
+          printf("File not found\n");
+          exit(0);
+        }
+
+        /* todo: change the following code executing the resloved path */
+
+        // Support multiple arguments which can be pass into the program
         // Since we need to fill NULL to the last char*, 
         // I just pass a invalid i to tokens_get_token() 
         char** args = malloc(sizeof(char*) * (tokens_get_length(tokens)+1));
