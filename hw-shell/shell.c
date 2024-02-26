@@ -97,6 +97,41 @@ int lookup(char cmd[]) {
   return -1;
 }
 
+/* Find accessible file path from PATH 
+ * Input: string of a file path
+ * Return NULL if not finding a valid file path, otherwise return the found path  
+ * */
+char* find_file_path(char* const filepath) {
+  /* Use getenv(PATH) to get the PATH environment variable */
+  char* pathenv = malloc(strlen(getenv("PATH")));
+  strcpy(pathenv, getenv("PATH"));
+  const char* const delim = ":";
+  char* saveptr = NULL;
+  char* result = NULL;
+
+  // printf("%s\n", pathenv);
+  pathenv = strtok_r(pathenv, delim, &saveptr);
+  while(pathenv) {
+    /* See if the file exist in this directory */
+    char* dup_path = malloc(strlen(pathenv) + strlen(filepath) + 1);
+    strcpy(dup_path, pathenv);
+    strcat(dup_path, "/");
+    strcat(dup_path, filepath);
+    if(access(dup_path, F_OK) != -1) {
+      // printf("File exist: %s\n", dup_path);
+      result = dup_path;
+      break;
+    }
+    else {
+      // printf("File doesn't exist: %s\n", dup_path);
+    }
+
+      pathenv = strtok_r(NULL, delim, &saveptr);
+  }
+  return result;
+}
+
+
 /* Intialization procedures for this shell */
 void init_shell() {
   /* Our shell is connected to standard input. */
@@ -144,7 +179,6 @@ int main(unused int argc, unused char* argv[]) {
       cmd_table[fundex].fun(tokens);
     } else {
       /* REPLACE this to run commands as programs. */
-      /* todo */
       int status;
       pid_t cpid;
       cpid = fork();
@@ -156,50 +190,30 @@ int main(unused int argc, unused char* argv[]) {
       else if(cpid == 0) {
         /* child process */
         /* Run a new process image by using a execv() system call */
-        /* Use getenv(PATH) to get the PATH environment variable */
-        /* todo: check if the command line path is absolute path, 
-         * It is a absolute path if it starts with a '/' */
-        char* pathenv = malloc(strlen(getenv("PATH")));
-        strcpy(pathenv, getenv("PATH"));
-        const char* const delim = ":";
-        char* saveptr = NULL;
-        char* filepath = NULL;
 
-        printf("%s\n", pathenv);
-        pathenv = strtok_r(pathenv, delim, &saveptr);
-        while(pathenv) {
-          /* See if the file exist in this directory */
-          char* dup_path = malloc(strlen(pathenv));
-          strcpy(dup_path, pathenv);
-          strcat(dup_path, "/");
-          strcat(dup_path, tokens_get_token(tokens, 0));
-          if(access(dup_path, F_OK) != -1) {
-            printf("File exist: %s\n", dup_path);
-            filepath = dup_path;
-            break;
-          }
-          else {
-            printf("File doesn't exist: %s\n", dup_path);
-          }
-
-          pathenv = strtok_r(NULL, delim, &saveptr);
-        }
-
-        if(!filepath) {
-          printf("File not found\n");
+        /* Check if the given path works
+         * If it is not working add PATH in front of it and see if it works */
+        char* program_path = tokens_get_token(tokens, 0);
+        if(access(program_path, F_OK) == -1) 
+          program_path = find_file_path(program_path);
+      
+        if(!program_path) {
+          printf("Program file not found\n");
           exit(0);
         }
-
-        /* todo: change the following code executing the resloved path */
+        else {
+          printf("Program file found at %s\n", program_path);
+        }
 
         // Support multiple arguments which can be pass into the program
         // Since we need to fill NULL to the last char*, 
         // I just pass a invalid i to tokens_get_token() 
         char** args = malloc(sizeof(char*) * (tokens_get_length(tokens)+1));
-        for(unsigned int i = 0; i <= tokens_get_length(tokens); ++i) {
+        args[0] = program_path;
+        for(unsigned int i = 1; i <= tokens_get_length(tokens); ++i) {
           args[i] = tokens_get_token(tokens, i);
         }
-        execv(tokens_get_token(tokens, 0), args);
+        execv(program_path, args);
         perror("execv");
         exit(0);
       }
