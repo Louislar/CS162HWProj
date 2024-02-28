@@ -97,6 +97,19 @@ int lookup(char cmd[]) {
   return -1;
 }
 
+/* Find specific symbol (e.g. '>' or '<' or '|') from tokens 
+ * Return found symbol indices in a array. 
+ * If not finding the symbol return -1 */
+int find_symbol_from_tokens(struct tokens* tokens, int start_index, char* const symbol) {
+  if(!symbol) return -1;
+  int symbol_index = -1;
+  for(unsigned int i = start_index; i<tokens_get_length(tokens); ++i) {
+    char* const a_token = tokens_get_token(tokens, i);
+    if(strcmp(a_token, symbol) == 0) { symbol_index = i; break; }
+  }
+  return symbol_index;
+}
+
 /* Find accessible file path from PATH 
  * Input: string of a file path
  * Return NULL if not finding a valid file path, otherwise return the found path  
@@ -158,6 +171,73 @@ void init_shell() {
   }
 }
 
+/* A task in command line with program's path, process_id, redirection FILE pointers */
+struct command_task{
+pid_t pid;
+FILE* redirect_in;
+FILE* redirect_out;
+char** args;  // including programs path at the first element, and a NULL at the last element
+int args_len;
+};
+
+/* Parse tokens into command line task struct 
+ * The end_index is pointing to position next to the last element 
+ * Return NULL if error occurs while parsing */
+struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int end_index) {
+  struct command_task* com_task = (struct command_task*) malloc(sizeof(struct command_task));
+  // Fetch commands until pipe symbol and be aware of the redirection symbols 
+  // The length of command may need to be adjust by realloc() after removing > and < 
+  com_task->args = malloc(sizeof(char*) * (end_index - start_index));
+  com_task->args_len = 0;
+  // if there's nothing after redirection symbol, return error 
+  for(unsigned int i = start_index; i < end_index; ++i) {
+    char* cur_token = tokens_get_token(tokens, i);
+    char* next_token = tokens_get_token(tokens, i+1);
+
+    if(strcmp(cur_token, ">") != 0 && strcmp(cur_token, "<") != 0) {
+      com_task->args[com_task->args_len] = cur_token;
+      ++com_task->args_len;
+    }
+    else if(strcmp(cur_token, ">") == 0) {
+      // If next symbol is '|', '>', '<', or nothing's over there, return error
+      if(i+1 < end_index && 
+          strcmp(next_token, "|") != 0 && 
+          strcmp(next_token, ">") != 0 && 
+          strcmp(next_token, "<") != 0) {
+        com_task->redirect_out = fopen(next_token, "w+");
+      }
+      else {
+        free(com_task->args);
+        free(com_task);
+        return NULL; // This is a invalid command, 
+                        // need to let user enter another command again in the parent process
+      }
+      ++i;
+    }
+    else if(strcmp(cur_token, "<") == 0) {
+      if(i+1 < end_index && 
+          strcmp(next_token, "|") != 0 && 
+          strcmp(next_token, ">") != 0 && 
+          strcmp(next_token, "<") != 0) {
+        com_task->redirect_in = fopen(next_token, "r");
+        // todo: remember to close the file when ending the parent process 
+      }
+      else {
+        free(com_task->args);
+        free(com_task);
+        return NULL;
+      }
+      ++i;
+    }
+  } // for loop end
+  char** tmp_command = realloc(com_task->args, sizeof(char*) * com_task->args_len);
+  if(!tmp_command) {perror("realloc failed"); exit(0);}
+  com_task->args = tmp_command;
+  // todo: Add additional NULL at the end of the args array 
+
+  return com_task;
+}
+
 int main(unused int argc, unused char* argv[]) {
   init_shell();
 
@@ -179,6 +259,48 @@ int main(unused int argc, unused char* argv[]) {
       cmd_table[fundex].fun(tokens);
     } else {
       /* REPLACE this to run commands as programs. */
+      /* Command parsing should be here 
+       * Since the child processes is created after parsing the command */ 
+
+      /* Check if there is any special symbols, e.g. '<', '>', '|' 
+       * After removing all of these stuffs, the first token is the programs name 
+       * Use dup2 to redirect stdin and stdout */
+
+      int pipe_index = find_symbol_from_tokens(tokens, 0, "|");
+      /* Separate by pipe symbol first, 
+       * and each of the separated command will be executed in a different child process. 
+       * The resulting command and corresponding stdin/stdout redirection 
+       * will be stored in a struct command_task */
+      
+      int cur_index = 0;
+      unused FILE* redirect_in = NULL;
+      unused FILE* redirect_out = NULL;
+      while(pipe_index != -1) {
+        struct command_task* com_task = 
+          tokens_to_task(tokens, cur_index, pipe_index);
+        if(com_task) {
+          printf("Length: %d\n", com_task->args_len);
+          for(int i=0;i<com_task->args_len;++i) printf("%s\n", com_task->args[i]);
+          printf("=== next process ===\n");
+        }
+
+        cur_index = pipe_index + 1;
+        pipe_index = find_symbol_from_tokens(tokens, pipe_index+1, "|");
+      } // while loop end
+
+      // Do above process again, 
+      // this is for the command that does not end with a pipe symbol 
+      struct command_task* com_task = 
+        tokens_to_task(tokens, cur_index, (int) tokens_get_length(tokens));
+      if(com_task) {
+        printf("Length: %d\n", com_task->args_len);
+        for(int i=0;i<com_task->args_len;++i) printf("%s\n", com_task->args[i]);
+        printf("=== next process ===\n");
+      }
+
+      // todo: create processes and run all the programs with redirecting stdout and stdin to the specified FILE pointers
+
+      /* todo: make creating process into a function(char* program_path, char** args) */
       int status;
       pid_t cpid;
       cpid = fork();
@@ -207,11 +329,12 @@ int main(unused int argc, unused char* argv[]) {
 
         // Support multiple arguments which can be pass into the program
         // Since we need to fill NULL to the last char*, 
-        // I just pass a invalid i to tokens_get_token() 
+        // I just pass a invalid i to tokens_get_token()
         char** args = malloc(sizeof(char*) * (tokens_get_length(tokens)+1));
         args[0] = program_path;
         for(unsigned int i = 1; i <= tokens_get_length(tokens); ++i) {
-          args[i] = tokens_get_token(tokens, i);
+          char* a_token = tokens_get_token(tokens, i);
+          args[i] = a_token;
         }
         execv(program_path, args);
         perror("execv");
