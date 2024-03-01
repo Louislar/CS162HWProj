@@ -230,12 +230,43 @@ struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int 
       ++i;
     }
   } // for loop end
-  char** tmp_command = realloc(com_task->args, sizeof(char*) * com_task->args_len);
+  // Not every token is in args array, thus the length can be smaller  
+  char** tmp_command = realloc(com_task->args, sizeof(char*) * (com_task->args_len+1));
   if(!tmp_command) {perror("realloc failed"); exit(0);}
   com_task->args = tmp_command;
-  // todo: Add additional NULL at the end of the args array 
+  com_task->args[com_task->args_len] = NULL; // execv needs the last arg being NULL 
 
   return com_task;
+}
+
+/* Create a child process by giving args
+ * args is a array of strings (char**) and the first string must be program's path, 
+ * and the last pointer must be NULL 
+ * todo: the argument need to be a struct contains redirection pointers 
+ * Use dup2 to redirect stdin and stdout
+ * Return pid of the created child process */
+pid_t create_process_and_exec(struct command_task* com_task) {
+  pid_t cpid; // child pid
+  cpid = fork();
+  if(cpid > 0) {
+    /* parent process */
+    /* wait for the child process to finish */
+    // wait(&status);
+    // Not using this is because we want to create multiple processes 
+    // and try to wait all of them, and allowing them to run concurrently 
+  }
+  else if(cpid == 0) {
+    /* child process */
+    /* Run a new process image by using a execv() system call */
+
+    execv(com_task->args[0], com_task->args);
+    perror("execv");
+    exit(0);
+  }
+  else {
+    perror("Fork failed");
+  }
+  return cpid;
 }
 
 int main(unused int argc, unused char* argv[]) {
@@ -262,19 +293,15 @@ int main(unused int argc, unused char* argv[]) {
       /* Command parsing should be here 
        * Since the child processes is created after parsing the command */ 
 
-      /* Check if there is any special symbols, e.g. '<', '>', '|' 
-       * After removing all of these stuffs, the first token is the programs name 
-       * Use dup2 to redirect stdin and stdout */
-
-      int pipe_index = find_symbol_from_tokens(tokens, 0, "|");
+      struct command_task** all_com_tasks = malloc(512 * sizeof(struct command_task*));
+      int com_tasks_count = 0;
+      
       /* Separate by pipe symbol first, 
        * and each of the separated command will be executed in a different child process. 
        * The resulting command and corresponding stdin/stdout redirection 
        * will be stored in a struct command_task */
-      
+      int pipe_index = find_symbol_from_tokens(tokens, 0, "|");
       int cur_index = 0;
-      unused FILE* redirect_in = NULL;
-      unused FILE* redirect_out = NULL;
       while(pipe_index != -1) {
         struct command_task* com_task = 
           tokens_to_task(tokens, cur_index, pipe_index);
@@ -282,11 +309,13 @@ int main(unused int argc, unused char* argv[]) {
           printf("Length: %d\n", com_task->args_len);
           for(int i=0;i<com_task->args_len;++i) printf("%s\n", com_task->args[i]);
           printf("=== next process ===\n");
+          all_com_tasks[com_tasks_count] = com_task;
+          ++com_tasks_count;
         }
 
         cur_index = pipe_index + 1;
         pipe_index = find_symbol_from_tokens(tokens, pipe_index+1, "|");
-      } // while loop end
+      } // while pipe_index != -1 loop end
 
       // Do above process again, 
       // this is for the command that does not end with a pipe symbol 
@@ -296,55 +325,46 @@ int main(unused int argc, unused char* argv[]) {
         printf("Length: %d\n", com_task->args_len);
         for(int i=0;i<com_task->args_len;++i) printf("%s\n", com_task->args[i]);
         printf("=== next process ===\n");
+        all_com_tasks[com_tasks_count] = com_task;
+        ++com_tasks_count;
       }
 
-      // todo: create processes and run all the programs with redirecting stdout and stdin to the specified FILE pointers
+      // todo: codes below including checking path, parse multiple arguments, 
+      // and create and execute process need to be done in a loop
+      // todo: AFTER checking all the programs' path exits, then we can execute those programs 
+      // todo: redirecting the stdout and stdin in the child processes 
 
-      /* todo: make creating process into a function(char* program_path, char** args) */
-      int status;
-      pid_t cpid;
-      cpid = fork();
-      if(cpid > 0) {
-        /* parent process */
-        /* wait for the child process to finish */
-        wait(&status);
-      }
-      else if(cpid == 0) {
-        /* child process */
-        /* Run a new process image by using a execv() system call */
-
-        /* Check if the given path works
-         * If it is not working add PATH in front of it and see if it works */
-        char* program_path = tokens_get_token(tokens, 0);
+      for(int i=0;i<com_tasks_count;++i) {
+        struct command_task* com_task = all_com_tasks[i];
+        char* program_path = com_task->args[0];
         if(access(program_path, F_OK) == -1) 
           program_path = find_file_path(program_path);
       
         if(!program_path) {
           printf("Program file not found\n");
-          exit(0);
+          continue; // This will break sth, so its not correct 
+          //exit(0);
         }
         else {
           printf("Program file found at %s\n", program_path);
+          com_task->args[0] = program_path;
         }
+      
+        // create process and execute 
+        com_task->pid = create_process_and_exec(com_task);
+      }
+      
+      /* Wait all the child processes to terminate */ 
+      for(int i=0;i<com_tasks_count;++i) {
+        waitpid(all_com_tasks[i]->pid, NULL, 0);
+      }
 
-        // Support multiple arguments which can be pass into the program
-        // Since we need to fill NULL to the last char*, 
-        // I just pass a invalid i to tokens_get_token()
-        char** args = malloc(sizeof(char*) * (tokens_get_length(tokens)+1));
-        args[0] = program_path;
-        for(unsigned int i = 1; i <= tokens_get_length(tokens); ++i) {
-          char* a_token = tokens_get_token(tokens, i);
-          args[i] = a_token;
-        }
-        execv(program_path, args);
-        perror("execv");
-        exit(0);
-      }
-      else {
-        perror("Fork failed");
-      }
+
+        
+      // todo: free all the child processes' resources in the struct
+
       // fprintf(stdout, "This shell doesn't know how to run programs.\n");
-    }
+    } // if fundex < 0 end
 
     if (shell_is_interactive)
       /* Please only print shell prompts when standard input is not a tty */
