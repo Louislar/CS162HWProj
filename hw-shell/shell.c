@@ -174,17 +174,27 @@ void init_shell() {
 /* A task in command line with program's path, process_id, redirection FILE pointers */
 struct command_task{
 pid_t pid;
-FILE* redirect_in;
-FILE* redirect_out;
+int redirect_in;
+int redirect_out;
 char** args;  // including programs path at the first element, and a NULL at the last element
 int args_len;
 };
+
+/* Initialize command_task structure */ 
+void init_command_task(struct command_task* com_task) {
+  com_task->pid = -1;
+  com_task->redirect_in = -1;
+  com_task->redirect_out = -1;
+  com_task->args = NULL;
+  com_task->args_len = 0;
+}
 
 /* Parse tokens into command line task struct 
  * The end_index is pointing to position next to the last element 
  * Return NULL if error occurs while parsing */
 struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int end_index) {
   struct command_task* com_task = (struct command_task*) malloc(sizeof(struct command_task));
+  init_command_task(com_task);
   // Fetch commands until pipe symbol and be aware of the redirection symbols 
   // The length of command may need to be adjust by realloc() after removing > and < 
   com_task->args = malloc(sizeof(char*) * (end_index - start_index));
@@ -204,7 +214,7 @@ struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int 
           strcmp(next_token, "|") != 0 && 
           strcmp(next_token, ">") != 0 && 
           strcmp(next_token, "<") != 0) {
-        com_task->redirect_out = fopen(next_token, "w+");
+        com_task->redirect_out = open(next_token, O_WRONLY|O_CREAT|O_CLOEXEC);
       }
       else {
         free(com_task->args);
@@ -219,8 +229,11 @@ struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int 
           strcmp(next_token, "|") != 0 && 
           strcmp(next_token, ">") != 0 && 
           strcmp(next_token, "<") != 0) {
-        com_task->redirect_in = fopen(next_token, "r");
-        // todo: remember to close the file when ending the parent process 
+        com_task->redirect_in = open(next_token, O_RDONLY|O_CLOEXEC);
+        if(com_task->redirect_in == -1) { // if no such file, return NULL and print error code out
+          perror(next_token);
+          return NULL;
+        }
       }
       else {
         free(com_task->args);
@@ -240,9 +253,7 @@ struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int 
 }
 
 /* Create a child process by giving args
- * args is a array of strings (char**) and the first string must be program's path, 
- * and the last pointer must be NULL 
- * todo: the argument need to be a struct contains redirection pointers 
+ * The argument is a struct contains redirection pointers and other necessary info of a program  
  * Use dup2 to redirect stdin and stdout
  * Return pid of the created child process */
 pid_t create_process_and_exec(struct command_task* com_task) {
@@ -258,7 +269,10 @@ pid_t create_process_and_exec(struct command_task* com_task) {
   else if(cpid == 0) {
     /* child process */
     /* Run a new process image by using a execv() system call */
-
+    if(com_task->redirect_in >= 0)
+      dup2(com_task->redirect_in, STDIN_FILENO);
+    if(com_task->redirect_out >= 0)
+      dup2(com_task->redirect_out, STDOUT_FILENO);
     execv(com_task->args[0], com_task->args);
     perror("execv");
     exit(0);
@@ -291,7 +305,7 @@ int main(unused int argc, unused char* argv[]) {
     } else {
       /* REPLACE this to run commands as programs. */
       /* Command parsing should be here 
-       * Since the child processes is created after parsing the command */ 
+       * Since the child processes are created after parsing the command */ 
 
       struct command_task** all_com_tasks = malloc(512 * sizeof(struct command_task*));
       int com_tasks_count = 0;
@@ -299,7 +313,9 @@ int main(unused int argc, unused char* argv[]) {
       /* Separate by pipe symbol first, 
        * and each of the separated command will be executed in a different child process. 
        * The resulting command and corresponding stdin/stdout redirection 
-       * will be stored in a struct command_task */
+       * will be stored in a data structure 'command_task' */
+      // The process before PIPE and after PIPE need to redirect their stdout to stdin
+      int next_proc_redirect_stdin_fd = -1;
       int pipe_index = find_symbol_from_tokens(tokens, 0, "|");
       int cur_index = 0;
       while(pipe_index != -1) {
@@ -312,6 +328,20 @@ int main(unused int argc, unused char* argv[]) {
           all_com_tasks[com_tasks_count] = com_task;
           ++com_tasks_count;
         }
+        else {
+          // todo: when error occurs while parsing, need to allow user to enter next command, 
+          // just like nothing happened
+        }
+
+        // PIPE setting
+        int pipefd[2];
+        if(pipe(pipefd) == -1) perror("pipe");
+        com_task->redirect_in = next_proc_redirect_stdin_fd;
+        com_task->redirect_out = pipefd[1];
+        next_proc_redirect_stdin_fd = pipefd[0];
+        if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) == -1) perror("fcntl");
+        if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) == -1) perror("fcntl");
+
 
         cur_index = pipe_index + 1;
         pipe_index = find_symbol_from_tokens(tokens, pipe_index+1, "|");
@@ -328,12 +358,15 @@ int main(unused int argc, unused char* argv[]) {
         all_com_tasks[com_tasks_count] = com_task;
         ++com_tasks_count;
       }
+      // PIPE setting 
+      com_task->redirect_in = next_proc_redirect_stdin_fd;
 
-      // todo: codes below including checking path, parse multiple arguments, 
-      // and create and execute process need to be done in a loop
-      // todo: AFTER checking all the programs' path exits, then we can execute those programs 
-      // todo: redirecting the stdout and stdin in the child processes 
 
+      // Every separated command's path needs to be checked and need to do path resolution, 
+      // after that create a child process to execute it. 
+
+      // If any path resolution failed, do not execute any program and allows user to type in next command.
+      bool is_commands_valid = true;
       for(int i=0;i<com_tasks_count;++i) {
         struct command_task* com_task = all_com_tasks[i];
         char* program_path = com_task->args[0];
@@ -341,27 +374,37 @@ int main(unused int argc, unused char* argv[]) {
           program_path = find_file_path(program_path);
       
         if(!program_path) {
-          printf("Program file not found\n");
-          continue; // This will break sth, so its not correct 
+          printf("%s: Program file not found\n", com_task->args[0]);
+          is_commands_valid = false;
           //exit(0);
         }
         else {
           printf("Program file found at %s\n", program_path);
           com_task->args[0] = program_path;
         }
-      
-        // create process and execute 
-        com_task->pid = create_process_and_exec(com_task);
       }
       
-      /* Wait all the child processes to terminate */ 
-      for(int i=0;i<com_tasks_count;++i) {
-        waitpid(all_com_tasks[i]->pid, NULL, 0);
-      }
+      if(is_commands_valid) {
+        for(int i=0;i<com_tasks_count;++i) {
+          // create process and execute 
+          all_com_tasks[i]->pid = create_process_and_exec(all_com_tasks[i]);
 
+          /* All the PIPE's need to be closed here, otherwise child porcesses will never ends 
+           * Also freeing all the resources in the data structure command_task */
+          struct command_task* com_task = all_com_tasks[i];
+          if(com_task->redirect_in) close(com_task->redirect_in);
+          if(com_task->redirect_out) close(com_task->redirect_out);
+        }
+
+        /* Wait all the child processes to terminate */ 
+        for(int i=0;i<com_tasks_count;++i) {
+          waitpid(all_com_tasks[i]->pid, NULL, 0);
+        }
+      } // if commands_is_valid
 
         
       // todo: free all the child processes' resources in the struct
+      // The strings in args don't need to be freed, since we're just pointing them to the original tokens
 
       // fprintf(stdout, "This shell doesn't know how to run programs.\n");
     } // if fundex < 0 end
