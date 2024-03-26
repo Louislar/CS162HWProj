@@ -243,6 +243,8 @@ struct command_task* tokens_to_task(struct tokens* tokens, int start_index, int 
       ++i;
     }
   } // for loop end
+  //  If it is a empty command, its still a invalid command (this is what I defined)
+  if(com_task->args_len == 0) return NULL;
   // Not every token is in args array, thus the length can be smaller  
   char** tmp_command = realloc(com_task->args, sizeof(char*) * (com_task->args_len+1));
   if(!tmp_command) {perror("realloc failed"); exit(0);}
@@ -309,6 +311,8 @@ int main(unused int argc, unused char* argv[]) {
 
       struct command_task** all_com_tasks = malloc(512 * sizeof(struct command_task*));
       int com_tasks_count = 0;
+      bool is_commands_valid = true;
+
       
       /* Separate by pipe symbol first, 
        * and each of the separated command will be executed in a different child process. 
@@ -329,8 +333,10 @@ int main(unused int argc, unused char* argv[]) {
           ++com_tasks_count;
         }
         else {
-          // todo: when error occurs while parsing, need to allow user to enter next command, 
+          // When error occurs while parsing, need to allow user to enter next command, 
           // just like nothing happened
+          is_commands_valid = false;
+          break;
         }
 
         // PIPE setting
@@ -357,16 +363,16 @@ int main(unused int argc, unused char* argv[]) {
         printf("=== next process ===\n");
         all_com_tasks[com_tasks_count] = com_task;
         ++com_tasks_count;
-      }
-      // PIPE setting 
-      com_task->redirect_in = next_proc_redirect_stdin_fd;
 
+        // PIPE setting 
+        com_task->redirect_in = next_proc_redirect_stdin_fd;
+      }
+      else is_commands_valid = false;
 
       // Every separated command's path needs to be checked and need to do path resolution, 
       // after that create a child process to execute it. 
 
       // If any path resolution failed, do not execute any program and allows user to type in next command.
-      bool is_commands_valid = true;
       for(int i=0;i<com_tasks_count;++i) {
         struct command_task* com_task = all_com_tasks[i];
         char* program_path = com_task->args[0];
@@ -384,6 +390,7 @@ int main(unused int argc, unused char* argv[]) {
         }
       }
       
+      /* Execute the commands only after parsing all the commands and check there're all valid */
       if(is_commands_valid) {
         for(int i=0;i<com_tasks_count;++i) {
           // create process and execute 
@@ -403,8 +410,11 @@ int main(unused int argc, unused char* argv[]) {
       } // if commands_is_valid
 
         
-      // todo: free all the child processes' resources in the struct
+      // Free all the child processes' resources in the struct
       // The strings in args don't need to be freed, since we're just pointing them to the original tokens
+      for(unsigned int i=0;i<com_tasks_count;++i) {
+        free(all_com_tasks[i]);
+      }
 
       // fprintf(stdout, "This shell doesn't know how to run programs.\n");
     } // if fundex < 0 end
