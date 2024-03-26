@@ -33,6 +33,7 @@ int cmd_help(struct tokens* tokens);
 int cmd_print(struct tokens* tokens);
 int cmd_cd(struct tokens* tokens);
 int cmd_pwd(struct tokens* tokens);
+int cmd_parentFgPgid(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -50,6 +51,7 @@ fun_desc_t cmd_table[] = {
     {cmd_print, "cmdprint", "print the line"},
     {cmd_pwd, "pwd", "print current working directory"},
     {cmd_cd, "cd", "change current working directory"}, 
+    {cmd_parentFgPgid, "fgpgid", "print parent terminal's foreground pgid"},
 
 };
 
@@ -83,6 +85,12 @@ int cmd_print(struct tokens* tokens) {
 int cmd_help(unused struct tokens* tokens) {
   for (unsigned int i = 0; i < sizeof(cmd_table) / sizeof(fun_desc_t); i++)
     printf("%s - %s\n", cmd_table[i].cmd, cmd_table[i].doc);
+  return 1;
+}
+
+/* Prints parent terminal's foreground process group id */
+int cmd_parentFgPgid(unused struct tokens* tokens) {
+  printf("%d\n", tcgetpgrp(STDIN_FILENO));
   return 1;
 }
 
@@ -174,6 +182,7 @@ void init_shell() {
 /* A task in command line with program's path, process_id, redirection FILE pointers */
 struct command_task{
 pid_t pid;
+pid_t pgid;
 int redirect_in;
 int redirect_out;
 char** args;  // including programs path at the first element, and a NULL at the last element
@@ -183,6 +192,7 @@ int args_len;
 /* Initialize command_task structure */ 
 void init_command_task(struct command_task* com_task) {
   com_task->pid = -1;
+  com_task->pgid = -1;
   com_task->redirect_in = -1;
   com_task->redirect_out = -1;
   com_task->args = NULL;
@@ -271,6 +281,8 @@ pid_t create_process_and_exec(struct command_task* com_task) {
   else if(cpid == 0) {
     /* child process */
     /* Run a new process image by using a execv() system call */
+    if(com_task->pgid > 0) setpgid(getpid(), com_task->pgid);
+    else setpgid(getpid(), getpid());
     if(com_task->redirect_in >= 0)
       dup2(com_task->redirect_in, STDIN_FILENO);
     if(com_task->redirect_out >= 0)
@@ -394,6 +406,7 @@ int main(unused int argc, unused char* argv[]) {
       if(is_commands_valid) {
         for(int i=0;i<com_tasks_count;++i) {
           // create process and execute 
+          all_com_tasks[i]->pgid = all_com_tasks[0]->pid;
           all_com_tasks[i]->pid = create_process_and_exec(all_com_tasks[i]);
 
           /* All the PIPE's need to be closed here, otherwise child porcesses will never ends 
