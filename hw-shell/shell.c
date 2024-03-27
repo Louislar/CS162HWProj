@@ -28,6 +28,29 @@ struct termios shell_tmodes;
 /* Process group id for the shell */
 pid_t shell_pgid;
 
+/* Foreground process group id for *this* shell 
+ * -1 means no process running in foreground */
+pid_t fgPgid=-1;
+
+/* Background process group ids for *this* shell, its an array 
+ * We limit the # of background process group to 10 
+ * Initialization is in init_shell() */
+pid_t* bgPgid;
+int bgPgCount;
+
+/* Signals should be transferred/forwarded to foreground process */
+int foreground_signals[5] = {SIGINT, SIGQUIT, SIGKILL, SIGTERM, SIGTSTP};
+
+/*todo: Signals should be transferred to background process */
+int background_signals[3] = {SIGCONT, SIGTTIN, SIGTTOU};
+
+/* todo: signal handler for signals going to be sent to foreground processes */
+void foreground_sig_handler(int sig_num) {
+  if(fgPgid > 0) killpg(fgPgid, sig_num);
+}
+/* todo: signal handler for signals going to be sent to background processes */
+void background_sig_handler(int sig_num);
+
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
 int cmd_print(struct tokens* tokens);
@@ -176,6 +199,13 @@ void init_shell() {
 
     /* Save the current termios to a variable, so it can be restored later. */
     tcgetattr(shell_terminal, &shell_tmodes);
+
+    /* Change the signal handler */
+    for(unsigned int i=0;i<5;++i) {
+      struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
+      tmp->sa_handler = &foreground_sig_handler;
+      sigaction(foreground_signals[i], tmp, NULL);
+    }
   }
 }
 
@@ -281,6 +311,13 @@ pid_t create_process_and_exec(struct command_task* com_task) {
   else if(cpid == 0) {
     /* child process */
     /* Run a new process image by using a execv() system call */
+    /* todo: change all the signal handlers to default handler */
+    for(unsigned int i=0;i<5;++i) {
+      struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
+      tmp->sa_handler = SIG_DFL;
+      sigaction(foreground_signals[i], tmp, NULL);
+    }
+
     if(com_task->pgid > 0) setpgid(getpid(), com_task->pgid);
     else setpgid(getpid(), getpid());
     if(com_task->redirect_in >= 0)
@@ -415,11 +452,20 @@ int main(unused int argc, unused char* argv[]) {
           if(com_task->redirect_in) close(com_task->redirect_in);
           if(com_task->redirect_out) close(com_task->redirect_out);
         }
+        fgPgid = all_com_tasks[0]->pid;
+        printf("Current foreground group id: %d\n", fgPgid);
 
         /* Wait all the child processes to terminate */ 
         for(int i=0;i<com_tasks_count;++i) {
-          waitpid(all_com_tasks[i]->pid, NULL, 0);
+          int status=0;
+          pid_t return_pid = waitpid(all_com_tasks[i]->pid, &status, 0);
+          printf("After waiting pid: %d\n", all_com_tasks[i]->pid);
+          printf("status: %d\n", status);
+          printf("return pid: %d\n", return_pid);
+          if(return_pid == -1) perror("waitpid");
         }
+
+        fgPgid = -1;
       } // if commands_is_valid
 
         
