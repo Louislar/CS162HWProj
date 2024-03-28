@@ -29,14 +29,18 @@ struct termios shell_tmodes;
 pid_t shell_pgid;
 
 /* Foreground process group id for *this* shell 
- * -1 means no process running in foreground */
+ * -1 means no process running in foreground 
+ *  We also record the foreground child pids */
 pid_t fgPgid=-1;
+pid_t* fgPids=NULL; 
+int fgPidNum=0;
 
 /* Background process group ids for *this* shell, its an array 
- * We limit the # of background process group to 10 
+ * We limit the # of background process group to 1 
  * Initialization is in init_shell() */
-pid_t* bgPgid;
-int bgPgCount;
+pid_t bgPgid=-1;
+pid_t* bgPids=NULL;
+int bgPidNum=0;
 
 /* Signals should be transferred/forwarded to foreground process */
 int foreground_signals[5] = {SIGINT, SIGQUIT, SIGKILL, SIGTERM, SIGTSTP};
@@ -44,9 +48,18 @@ int foreground_signals[5] = {SIGINT, SIGQUIT, SIGKILL, SIGTERM, SIGTSTP};
 /*todo: Signals should be transferred to background process */
 int background_signals[3] = {SIGCONT, SIGTTIN, SIGTTOU};
 
-/* todo: signal handler for signals going to be sent to foreground processes */
+/* Signal handler for signals going to be sent to foreground processes */
 void foreground_sig_handler(int sig_num) {
   if(fgPgid > 0) killpg(fgPgid, sig_num);
+  if(sig_num == SIGTSTP) {
+    bgPgid = fgPgid;
+    fgPgid=-1;
+    // foreground pids need to be switch to background too
+    bgPids = fgPids;
+    fgPids=NULL;
+    bgPidNum = fgPidNum;
+    fgPidNum=0;
+  }
 }
 /* todo: signal handler for signals going to be sent to background processes */
 void background_sig_handler(int sig_num);
@@ -57,6 +70,9 @@ int cmd_print(struct tokens* tokens);
 int cmd_cd(struct tokens* tokens);
 int cmd_pwd(struct tokens* tokens);
 int cmd_parentFgPgid(struct tokens* tokens);
+int cmd_fg(struct tokens* tokens);
+int cmd_fgPgid(struct tokens* tokens);
+int cmd_bgPgid(struct tokens* tokens);
 
 /* Built-in command functions take token array (see parse.h) and return int */
 typedef int cmd_fun_t(struct tokens* tokens);
@@ -74,8 +90,10 @@ fun_desc_t cmd_table[] = {
     {cmd_print, "cmdprint", "print the line"},
     {cmd_pwd, "pwd", "print current working directory"},
     {cmd_cd, "cd", "change current working directory"}, 
-    {cmd_parentFgPgid, "fgpgid", "print parent terminal's foreground pgid"},
-
+    {cmd_parentFgPgid, "pfgpgid", "print parent terminal's foreground pgid"},
+    {cmd_fg, "fg", "resumes a paused program"},
+    {cmd_fgPgid, "fgpgid", "print current shell's foreground pgid"},
+    {cmd_bgPgid, "bgpgid", "print current shell's background pgid"},
 };
 
 /* Change current working directory */ 
@@ -114,6 +132,48 @@ int cmd_help(unused struct tokens* tokens) {
 /* Prints parent terminal's foreground process group id */
 int cmd_parentFgPgid(unused struct tokens* tokens) {
   printf("%d\n", tcgetpgrp(STDIN_FILENO));
+  return 1;
+}
+
+/* Resume the background process group to foreground */
+int cmd_fg(unused struct tokens* tokens) {
+  if(bgPgid>0) {
+    killpg(bgPgid, SIGCONT);
+    fgPgid = bgPgid;
+    bgPgid = -1;
+    // todo: I need to wait all the resumed process finished
+    fgPids = bgPids;
+    fgPidNum = bgPidNum;
+    bgPids=NULL;
+    bgPidNum=0;
+    int status;
+    for(unsigned int i=0;i<fgPidNum;++i) {
+      int return_pid = waitpid(fgPids[i], &status, WUNTRACED);
+      printf("After waiting pid: %d\n", fgPids[i]);
+      printf("status: %d\n", status);
+      printf("return pid: %d\n", return_pid);
+      if(return_pid == -1) perror("waitpid");
+    }
+
+    /* If child processes are terminated not stopped, clean their pids */
+    if(WIFEXITED(status) || WIFSIGNALED(status)) {
+      fgPgid = -1;
+      free(fgPids);
+      fgPidNum=0;
+    }
+  }
+  return 1;
+}
+
+/* print foreground process group id */
+int cmd_fgPgid(unused struct tokens* tokens) {
+  printf("%d\n", fgPgid);
+  return 1;
+}
+
+/* print background process group id */
+int cmd_bgPgid(unused struct tokens* tokens) {
+  printf("%d\n", bgPgid);
   return 1;
 }
 
@@ -203,6 +263,7 @@ void init_shell() {
     /* Change the signal handler */
     for(unsigned int i=0;i<5;++i) {
       struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
+      tmp->sa_flags = SA_RESTART;
       tmp->sa_handler = &foreground_sig_handler;
       sigaction(foreground_signals[i], tmp, NULL);
     }
@@ -311,7 +372,7 @@ pid_t create_process_and_exec(struct command_task* com_task) {
   else if(cpid == 0) {
     /* child process */
     /* Run a new process image by using a execv() system call */
-    /* todo: change all the signal handlers to default handler */
+    /* change all the signal handlers to default handler */
     for(unsigned int i=0;i<5;++i) {
       struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
       tmp->sa_handler = SIG_DFL;
@@ -453,19 +514,33 @@ int main(unused int argc, unused char* argv[]) {
           if(com_task->redirect_out) close(com_task->redirect_out);
         }
         fgPgid = all_com_tasks[0]->pid;
+        // record all foreground pids
+        fgPidNum = com_tasks_count;
+        fgPids = (pid_t*) malloc(fgPidNum * sizeof(pid_t));
+        for(unsigned int i=0;i<fgPidNum;++i) {
+          *(fgPids+i) = all_com_tasks[i]->pid;
+        }
         printf("Current foreground group id: %d\n", fgPgid);
 
         /* Wait all the child processes to terminate */ 
+        int status=0;
         for(int i=0;i<com_tasks_count;++i) {
-          int status=0;
-          pid_t return_pid = waitpid(all_com_tasks[i]->pid, &status, 0);
+          /* WUNTRACED flag means this will return when child process stops */
+          pid_t return_pid = waitpid(all_com_tasks[i]->pid, &status, WUNTRACED);
           printf("After waiting pid: %d\n", all_com_tasks[i]->pid);
           printf("status: %d\n", status);
           printf("return pid: %d\n", return_pid);
           if(return_pid == -1) perror("waitpid");
         }
-
-        fgPgid = -1;
+        
+        // we also need to change the foreground pids to null
+        // , only when the child processes are terminated not stopped
+        // If processes are stopped, they are cleared by corresponding handler
+        if(WIFEXITED(status) || WIFSIGNALED(status)) {
+          fgPgid = -1;
+          free(fgPids);
+          fgPidNum=0;
+        }
       } // if commands_is_valid
 
         
