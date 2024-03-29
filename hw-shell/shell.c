@@ -42,27 +42,11 @@ pid_t bgPgid=-1;
 pid_t* bgPids=NULL;
 int bgPidNum=0;
 
-/* Signals should be transferred/forwarded to foreground process */
+/* Signals should be sent to foreground process */
 int foreground_signals[5] = {SIGINT, SIGQUIT, SIGKILL, SIGTERM, SIGTSTP};
 
-/*todo: Signals should be transferred to background process */
+/* Signals should be sent to background process */
 int background_signals[3] = {SIGCONT, SIGTTIN, SIGTTOU};
-
-/* Signal handler for signals going to be sent to foreground processes */
-void foreground_sig_handler(int sig_num) {
-  if(fgPgid > 0) killpg(fgPgid, sig_num);
-  if(sig_num == SIGTSTP) {
-    bgPgid = fgPgid;
-    fgPgid=-1;
-    // foreground pids need to be switch to background too
-    bgPids = fgPids;
-    fgPids=NULL;
-    bgPidNum = fgPidNum;
-    fgPidNum=0;
-  }
-}
-/* todo: signal handler for signals going to be sent to background processes */
-void background_sig_handler(int sig_num);
 
 int cmd_exit(struct tokens* tokens);
 int cmd_help(struct tokens* tokens);
@@ -138,14 +122,17 @@ int cmd_parentFgPgid(unused struct tokens* tokens) {
 /* Resume the background process group to foreground */
 int cmd_fg(unused struct tokens* tokens) {
   if(bgPgid>0) {
-    killpg(bgPgid, SIGCONT);
-    fgPgid = bgPgid;
-    bgPgid = -1;
-    // todo: I need to wait all the resumed process finished
-    fgPids = bgPids;
-    fgPidNum = bgPidNum;
+    fgPgid=bgPgid;
+    fgPids=bgPids;
+    fgPidNum=bgPidNum;
+    bgPgid=-1;
     bgPids=NULL;
     bgPidNum=0;
+
+    killpg(fgPgid, SIGCONT);
+    tcsetpgrp(0, fgPgid);
+
+    // I need to wait all the resumed process finished
     int status;
     for(unsigned int i=0;i<fgPidNum;++i) {
       int return_pid = waitpid(fgPids[i], &status, WUNTRACED);
@@ -155,12 +142,22 @@ int cmd_fg(unused struct tokens* tokens) {
       if(return_pid == -1) perror("waitpid");
     }
 
-    /* If child processes are terminated not stopped, clean their pids */
+    /* If child processes are terminated not stopped, clean their pids 
+     * If they're stopped, move them to background */
     if(WIFEXITED(status) || WIFSIGNALED(status)) {
       fgPgid = -1;
       free(fgPids);
       fgPidNum=0;
     }
+    else if(WIFSTOPPED(status)) {
+      bgPgid=fgPgid;
+      bgPids = fgPids;
+      bgPidNum=fgPidNum;
+      fgPgid=-1;
+      fgPids=NULL;
+      fgPidNum=0;
+    }
+    tcsetpgrp(0, shell_pgid);
   }
   return 1;
 }
@@ -260,14 +257,20 @@ void init_shell() {
     /* Save the current termios to a variable, so it can be restored later. */
     tcgetattr(shell_terminal, &shell_tmodes);
 
-    /* Change the signal handler */
+    /* Change the signal handler of shell process to ignore */
     for(unsigned int i=0;i<5;++i) {
       struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
       tmp->sa_flags = SA_RESTART;
-      tmp->sa_handler = &foreground_sig_handler;
+      tmp->sa_handler = SIG_IGN;
       sigaction(foreground_signals[i], tmp, NULL);
     }
-  }
+    for(unsigned int i=0;i<3;++i) {
+      struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
+      tmp->sa_flags = SA_RESTART;
+      tmp->sa_handler = SIG_IGN;
+      sigaction(background_signals[i], tmp, NULL);
+    }
+  } // if(shell_is_interactive)
 }
 
 /* A task in command line with program's path, process_id, redirection FILE pointers */
@@ -377,6 +380,12 @@ pid_t create_process_and_exec(struct command_task* com_task) {
       struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
       tmp->sa_handler = SIG_DFL;
       sigaction(foreground_signals[i], tmp, NULL);
+    }
+    for(unsigned int i=0;i<3;++i) {
+      struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
+      tmp->sa_flags = SA_RESTART;
+      tmp->sa_handler = SIG_DFL;
+      sigaction(background_signals[i], tmp, NULL);
     }
 
     if(com_task->pgid > 0) setpgid(getpid(), com_task->pgid);
@@ -522,6 +531,9 @@ int main(unused int argc, unused char* argv[]) {
         }
         printf("Current foreground group id: %d\n", fgPgid);
 
+        /* Switch current foreground pgid */
+        tcsetpgrp(0, fgPgid);
+
         /* Wait all the child processes to terminate */ 
         int status=0;
         for(int i=0;i<com_tasks_count;++i) {
@@ -533,14 +545,21 @@ int main(unused int argc, unused char* argv[]) {
           if(return_pid == -1) perror("waitpid");
         }
         
-        // we also need to change the foreground pids to null
-        // , only when the child processes are terminated not stopped
-        // If processes are stopped, they are cleared by corresponding handler
+        // When the child processes are terminated not stopped, clean the forground pids
+        // If processes are stopped, they are going to be moved to background pids,
         if(WIFEXITED(status) || WIFSIGNALED(status)) {
-          fgPgid = -1;
           free(fgPids);
           fgPidNum=0;
         }
+        else if(WIFSTOPPED(status)) {
+          bgPgid=fgPgid;
+          bgPids = fgPids;
+          bgPidNum=fgPidNum;
+          fgPgid=-1;
+          fgPids=NULL;
+          fgPidNum=0;
+        }
+        tcsetpgrp(0, shell_pgid);
       } // if commands_is_valid
 
         
