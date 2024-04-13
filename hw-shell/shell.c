@@ -129,7 +129,11 @@ int cmd_fg(unused struct tokens* tokens) {
     bgPids=NULL;
     bgPidNum=0;
 
-    killpg(fgPgid, SIGCONT);
+    int sig_result = killpg(fgPgid, SIGCONT);
+    if(sig_result == -1) {
+      perror("killpg (SIGCONT)");
+      return 1;
+    }
     tcsetpgrp(0, fgPgid);
 
     // I need to wait all the resumed process finished
@@ -232,6 +236,21 @@ char* find_file_path(char* const filepath) {
   return result;
 }
 
+/* Check if every process in a specific process group are all terminated */
+bool isProcessAlive(int pgid_in){
+  int status;
+  pid_t wait_return = waitpid(-pgid_in, &status, WNOHANG);
+  int return_error = errno;
+  if(wait_return == -1){
+    perror("waitpid (isProcessAlive)");
+    if(return_error == ECHILD) printf("No background child process found\n");
+    return false;
+  }
+  else if(wait_return == 0) return true;
+  else { // if it returns a valid pid
+    return true;
+  }
+}
 
 /* Intialization procedures for this shell */
 void init_shell() {
@@ -270,6 +289,13 @@ void init_shell() {
       tmp->sa_handler = SIG_IGN;
       sigaction(background_signals[i], tmp, NULL);
     }
+    /* Shell process need to deal with SIGCHLD, 
+     * not making the terminated child processes into zombie by using the SA_NOCLDWAIT option */
+    struct sigaction* tmp = (struct sigaction*) malloc(sizeof(struct sigaction));
+    tmp->sa_flags = SA_RESTART|SA_NOCLDWAIT;
+    tmp->sa_handler = SIG_DFL;
+    sigaction(SIGCHLD, tmp, NULL);
+
   } // if(shell_is_interactive)
 }
 
@@ -421,23 +447,34 @@ int main(unused int argc, unused char* argv[]) {
     /* Find which built-in function to run. */
     int fundex = lookup(tokens_get_token(tokens, 0));
 
+    /* Before running any command, check if all the background processes are terminated
+     * If it is, then modify the corresponding variables, e.g. bgPgid */
+    if(bgPgid!=-1 && !isProcessAlive(bgPgid)) {
+      bgPgid = -1;
+      free(bgPids);
+      bgPidNum=0;
+    }
+
+
     if (fundex >= 0) {
       cmd_table[fundex].fun(tokens);
     } else {
       /* REPLACE this to run commands as programs. */
+
       /* Command parsing should be here 
        * Since the child processes are created after parsing the command */ 
 
       struct command_task** all_com_tasks = malloc(512 * sizeof(struct command_task*));
       int com_tasks_count = 0;
       bool is_commands_valid = true;
+      bool is_command_background = false;
 
       
       /* Separate by pipe symbol first, 
        * and each of the separated command will be executed in a different child process. 
        * The resulting command and corresponding stdin/stdout redirection 
-       * will be stored in a data structure 'command_task' */
-      // The process before PIPE and after PIPE need to redirect their stdout to stdin
+       * will be stored in a data structure 'command_task'
+       * The process before PIPE and after PIPE need to redirect their stdout to stdin */
       int next_proc_redirect_stdin_fd = -1;
       int pipe_index = find_symbol_from_tokens(tokens, 0, "|");
       int cur_index = 0;
@@ -473,7 +510,7 @@ int main(unused int argc, unused char* argv[]) {
       } // while pipe_index != -1 loop end
 
       // Do above process again, 
-      // this is for the command that does not end with a pipe symbol 
+      // this is for the command that does not end with a pipe symbol
       struct command_task* com_task = 
         tokens_to_task(tokens, cur_index, (int) tokens_get_length(tokens));
       if(com_task) {
@@ -487,6 +524,15 @@ int main(unused int argc, unused char* argv[]) {
         com_task->redirect_in = next_proc_redirect_stdin_fd;
       }
       else is_commands_valid = false;
+
+      /* check if the last character is '&' 
+       * ignore it when executing the command, don't count it as a argument */
+      if(com_task->args[com_task->args_len-1][0] == '&') {
+        is_command_background=true;
+        com_task->args[com_task->args_len-1] = NULL;
+      }
+      if(is_command_background) 
+        printf("This is a background command\n");
 
       // Every separated command's path needs to be checked and need to do path resolution, 
       // after that create a child process to execute it. 
@@ -522,44 +568,58 @@ int main(unused int argc, unused char* argv[]) {
           if(com_task->redirect_in) close(com_task->redirect_in);
           if(com_task->redirect_out) close(com_task->redirect_out);
         }
-        fgPgid = all_com_tasks[0]->pid;
-        // record all foreground pids
-        fgPidNum = com_tasks_count;
-        fgPids = (pid_t*) malloc(fgPidNum * sizeof(pid_t));
-        for(unsigned int i=0;i<fgPidNum;++i) {
-          *(fgPids+i) = all_com_tasks[i]->pid;
-        }
-        printf("Current foreground group id: %d\n", fgPgid);
 
-        /* Switch current foreground pgid */
-        tcsetpgrp(0, fgPgid);
+        // If this is a background process, then it must record in bgPid and bgPgid
+        if(is_command_background) {
+          bgPgid = all_com_tasks[0]->pid;
+          bgPidNum = com_tasks_count;
+          bgPids = (pid_t*) malloc(bgPidNum * sizeof(pid_t));
+          for(unsigned int i=0;i<bgPidNum;++i) {
+            *(bgPids+i) = all_com_tasks[i]->pid;
+          }
+          printf("Current background group id: %d\n", bgPgid);
+        }
+        else {
+          fgPgid = all_com_tasks[0]->pid;
+          // record all foreground pids
+          fgPidNum = com_tasks_count;
+          fgPids = (pid_t*) malloc(fgPidNum * sizeof(pid_t));
+          for(unsigned int i=0;i<fgPidNum;++i) {
+            *(fgPids+i) = all_com_tasks[i]->pid;
+          }
+          printf("Current foreground group id: %d\n", fgPgid);
 
-        /* Wait all the child processes to terminate */ 
-        int status=0;
-        for(int i=0;i<com_tasks_count;++i) {
-          /* WUNTRACED flag means this will return when child process stops */
-          pid_t return_pid = waitpid(all_com_tasks[i]->pid, &status, WUNTRACED);
-          printf("After waiting pid: %d\n", all_com_tasks[i]->pid);
-          printf("status: %d\n", status);
-          printf("return pid: %d\n", return_pid);
-          if(return_pid == -1) perror("waitpid");
-        }
-        
-        // When the child processes are terminated not stopped, clean the forground pids
-        // If processes are stopped, they are going to be moved to background pids,
-        if(WIFEXITED(status) || WIFSIGNALED(status)) {
-          free(fgPids);
-          fgPidNum=0;
-        }
-        else if(WIFSTOPPED(status)) {
-          bgPgid=fgPgid;
-          bgPids = fgPids;
-          bgPidNum=fgPidNum;
-          fgPgid=-1;
-          fgPids=NULL;
-          fgPidNum=0;
-        }
-        tcsetpgrp(0, shell_pgid);
+          /* Switch current foreground pgid */
+          tcsetpgrp(0, fgPgid);
+
+          /* Wait all the child processes to terminate */
+          int status=0;
+          for(int i=0;i<com_tasks_count;++i) {
+            /* WUNTRACED flag means this will return when child process stops */
+            pid_t return_pid = waitpid(all_com_tasks[i]->pid, &status, WUNTRACED);
+            printf("After waiting pid: %d\n", all_com_tasks[i]->pid);
+            printf("status: %d\n", status);
+            printf("return pid: %d\n", return_pid);
+            if(return_pid == -1) perror("waitpid");
+          }
+          
+          // When the child processes are terminated not stopped, clean the forground pids
+          // If processes are stopped, they are going to be moved to background pids,
+          if(WIFEXITED(status) || WIFSIGNALED(status)) {
+            free(fgPids);
+            fgPidNum=0;
+            fgPgid=-1;
+          }
+          else if(WIFSTOPPED(status)) {
+            bgPgid=fgPgid;
+            bgPids = fgPids;
+            bgPidNum=fgPidNum;
+            fgPgid=-1;
+            fgPids=NULL;
+            fgPidNum=0;
+          }
+          tcsetpgrp(0, shell_pgid);
+        } // if !is_command_background
       } // if commands_is_valid
 
         
