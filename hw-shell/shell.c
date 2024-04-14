@@ -55,6 +55,7 @@ int cmd_cd(struct tokens* tokens);
 int cmd_pwd(struct tokens* tokens);
 int cmd_parentFgPgid(struct tokens* tokens);
 int cmd_fg(struct tokens* tokens);
+int cmd_bg(struct tokens* tokens);
 int cmd_fgPgid(struct tokens* tokens);
 int cmd_bgPgid(struct tokens* tokens);
 
@@ -76,6 +77,7 @@ fun_desc_t cmd_table[] = {
     {cmd_cd, "cd", "change current working directory"}, 
     {cmd_parentFgPgid, "pfgpgid", "print parent terminal's foreground pgid"},
     {cmd_fg, "fg", "resumes a paused program"},
+    {cmd_bg, "bg", "resumes a paused progema and leave it at background"},
     {cmd_fgPgid, "fgpgid", "print current shell's foreground pgid"},
     {cmd_bgPgid, "bgpgid", "print current shell's background pgid"},
 };
@@ -166,6 +168,19 @@ int cmd_fg(unused struct tokens* tokens) {
   return 1;
 }
 
+/* todo: resume the background process, but keep it in beckground */
+int cmd_bg(unused struct tokens* tokens) {
+  if(bgPgid>0) {
+    int sig_result = killpg(bgPgid, SIGCONT);
+    if(sig_result == -1) {
+      perror("killpg (SIGCONT to background)");
+      return 1;
+    }
+  }
+  else printf("No background process could be resume\n");
+  return 1;
+}
+
 /* print foreground process group id */
 int cmd_fgPgid(unused struct tokens* tokens) {
   printf("%d\n", fgPgid);
@@ -243,7 +258,7 @@ bool isProcessAlive(int pgid_in){
   int return_error = errno;
   if(wait_return == -1){
     perror("waitpid (isProcessAlive)");
-    if(return_error == ECHILD) printf("No background child process found\n");
+    if(return_error == ECHILD) printf("No background child process left running\n");
     return false;
   }
   else if(wait_return == 0) return true;
